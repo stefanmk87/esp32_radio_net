@@ -26,7 +26,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 #define I2S_BCK 27
 #define I2S_LRC 26
 #define I2S_DIN 25
-
+//
 float currentVolume = 0.5f; // Default volume (50%)
 
 AudioGeneratorMP3 *mp3 = nullptr;
@@ -223,6 +223,9 @@ void setup() {
     }
   </style>
   <script>
+
+
+
   function cancelEdit() {
   document.getElementById('editForm').style.display = 'none';
 }
@@ -245,15 +248,39 @@ void setup() {
       window.scrollTo(0, document.body.scrollHeight);
     }
   </script>
+
+  <script>
+  async function fetchStatus() {
+    try {
+      let response = await fetch('/status');
+      if (response.ok) {
+        let data = await response.json();
+        document.getElementById('title').innerText = data.title;
+        document.getElementById('station').innerText = data.station;
+        document.getElementById('ip').innerText = data.ip;
+      }
+    } catch(e) {
+      console.error('Failed to fetch status', e);
+    }
+  }
+
+  // Update every 3 seconds
+  setInterval(fetchStatus, 3000);
+
+  // Also fetch once when page loads
+  window.onload = fetchStatus;
+</script>
+  </script>
 </head>
 <body>
   <h1>ESP32 Internet Radio</h1>
 
   <section>
     <h2>Now Playing</h2>
-    <p><strong>Title:</strong> )rawliteral" + currentTitle + R"rawliteral(</p>
-    <p><strong>Station:</strong> )rawliteral" + stationName + R"rawliteral(</p>
-    <p><strong>IP Address:</strong> )rawliteral" + localIPStr + R"rawliteral(</p>
+<p><strong>Title:</strong> <span id="title">Loading...</span></p>
+<p><strong>Station:</strong> <span id="station">Loading...</span></p>
+<p><strong>IP Address:</strong> <span id="ip">Loading...</span></p>
+
   </section>
 
   <section>
@@ -431,6 +458,19 @@ void setup() {
       request->send(200, "application/json", "{\"status\":\"station added\"}");
     }
   });
+
+  server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+  xSemaphoreTake(titleMutex, portMAX_DELAY);
+  DynamicJsonDocument doc(512);
+  doc["title"] = currentTitle;
+  doc["station"] = stationName;
+  doc["ip"] = localIPStr;
+  String response;
+  serializeJson(doc, response);
+  xSemaphoreGive(titleMutex);
+  request->send(200, "application/json", response);
+});
+
 
   // --- REST API: Control playback ---
   server.on("/control", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
