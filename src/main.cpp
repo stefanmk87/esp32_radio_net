@@ -7,7 +7,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <ESPAsyncWebServer.h>
-#include <ArduinoJson.h>
+#include <ArduinoJson.h>          // *** API added ***
 #include <Preferences.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -75,14 +75,30 @@ void displayTask(void *param);
 void loadStationsFromPrefs();
 void saveStationsToPrefs();
 
+
+// --- Convert stations array to JSON string for API ---
+String stationsToJson() {  // *** API added ***
+  DynamicJsonDocument doc(2048);
+  JsonArray arr = doc.to<JsonArray>();
+
+  for (int i = 0; i < numStations; i++) {
+    JsonObject obj = arr.createNestedObject();
+    obj["name"] = stations[i].name;
+    obj["url"] = stations[i].url;
+  }
+
+  String output;
+  serializeJson(doc, output);
+  return output;
+}
+
+
 void setup() {
   // Disable serial debug to save resources
-  // Serial.begin(115200); // <-- disabled intentionally
+  Serial.begin(115200); // <-- disabled intentionally
 
   // Push CPU freq to max 240 MHz
-setCpuFrequencyMhz(240);
-
-//setCpuFrequencyMhz(160);
+  setCpuFrequencyMhz(240);
 
   delay(100);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
@@ -115,11 +131,11 @@ setCpuFrequencyMhz(240);
   xTaskCreatePinnedToCore(audioTask, "AudioTask", 8192, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(displayTask, "DisplayTask", 4096, NULL, 1, NULL, 1);
 
-  // Serve the web interface
+  // Serve the web interface (existing HTML + JS)
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-  xSemaphoreTake(titleMutex, portMAX_DELAY);
+    xSemaphoreTake(titleMutex, portMAX_DELAY);
 
-  String html = R"rawliteral(
+   String html = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -207,6 +223,10 @@ setCpuFrequencyMhz(240);
     }
   </style>
   <script>
+  function cancelEdit() {
+  document.getElementById('editForm').style.display = 'none';
+}
+
     let volumeTimeout = null;
     function setVolumeDebounced(vol) {
       if (volumeTimeout) clearTimeout(volumeTimeout);
@@ -266,17 +286,19 @@ setCpuFrequencyMhz(240);
     </table>
   </section>
 
-  <section id="editForm">
-    <h2>Edit Station</h2>
-    <form action="/update" method="POST">
-      <input type="hidden" id="editIndex" name="index" />
-      <label for="editName">Name</label>
-      <input type="text" id="editName" name="name" required />
-      <label for="editUrl">URL</label>
-      <input type="url" id="editUrl" name="url" required />
-      <button type="submit">Update Station</button>
-    </form>
-  </section>
+<section id="editForm">
+  <h2>Edit Station</h2>
+  <form action="/update" method="POST">
+    <input type="hidden" id="editIndex" name="index" />
+    <label for="editName">Name</label>
+    <input type="text" id="editName" name="name" required />
+    <label for="editUrl">URL</label>
+    <input type="url" id="editUrl" name="url" required />
+    <button type="submit">Update Station</button>
+    <button type="button" onclick="cancelEdit()">Cancel</button>
+  </form>
+</section>
+
 
   <section>
     <h2>Add New Station</h2>
@@ -293,10 +315,11 @@ setCpuFrequencyMhz(240);
 </html>
 )rawliteral";
 
-  xSemaphoreGive(titleMutex);
-  request->send(200, "text/html", html);
-});
+    xSemaphoreGive(titleMutex);
+    request->send(200, "text/html", html);
+  });
 
+  // Volume control via web UI (existing)
   server.on("/volume", HTTP_POST, [](AsyncWebServerRequest *request) {
     if (request->hasParam("vol", true)) {
       int vol = request->getParam("vol", true)->value().toInt();
@@ -308,6 +331,7 @@ setCpuFrequencyMhz(240);
     request->send(200, "text/plain", "OK");
   });
 
+  // Play station by index (existing)
   server.on("/play", HTTP_GET, [](AsyncWebServerRequest *request) {
     if (request->hasParam("index")) {
       int idx = request->getParam("index")->value().toInt();
@@ -316,6 +340,7 @@ setCpuFrequencyMhz(240);
     request->redirect("/");
   });
 
+  // Add station (existing)
   server.on("/add", HTTP_POST, [](AsyncWebServerRequest *request) {
     if (numStations < MAX_STATIONS && request->hasParam("name", true) && request->hasParam("url", true)) {
       String name = request->getParam("name", true)->value();
@@ -330,6 +355,7 @@ setCpuFrequencyMhz(240);
     request->redirect("/");
   });
 
+  // Update station (existing)
   server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request) {
     if (request->hasParam("index", true) && request->hasParam("name", true) && request->hasParam("url", true)) {
       int idx = request->getParam("index", true)->value().toInt();
@@ -344,6 +370,7 @@ setCpuFrequencyMhz(240);
     request->redirect("/");
   });
 
+  // Delete station (existing)
   server.on("/delete", HTTP_GET, [](AsyncWebServerRequest *request) {
     if (request->hasParam("index")) {
       int idx = request->getParam("index")->value().toInt();
@@ -356,6 +383,100 @@ setCpuFrequencyMhz(240);
       }
     }
     request->redirect("/");
+  });
+
+  // --- REST API: Get all stations ---
+  server.on("/stations", HTTP_GET, [](AsyncWebServerRequest *request){  // *** API added ***
+    String json = stationsToJson();
+    request->send(200, "application/json", json);
+  });
+
+  // --- REST API: Add new station ---
+  server.on("/stations", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
+  [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+    static String body;
+    if(index == 0) body = "";
+    body += String((char*)data).substring(0, len);
+
+    if(index + len == total){
+      DynamicJsonDocument doc(512);
+      DeserializationError error = deserializeJson(doc, body);
+      if(error){
+        request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        return;
+      }
+
+      String name = doc["name"] | "";
+      String url = doc["url"] | "";
+
+      if(name.isEmpty() || url.isEmpty()){
+        request->send(400, "application/json", "{\"error\":\"Missing name or url\"}");
+        return;
+      }
+
+      if(numStations >= MAX_STATIONS){
+        request->send(400, "application/json", "{\"error\":\"Station list full\"}");
+        return;
+      }
+
+      RadioStation newStation;
+      strncpy(newStation.name, name.c_str(), MAX_NAME_LEN);
+      newStation.name[MAX_NAME_LEN-1] = 0;
+      strncpy(newStation.url, url.c_str(), MAX_URL_LEN);
+      newStation.url[MAX_URL_LEN-1] = 0;
+      stations[numStations++] = newStation;
+
+      saveStationsToPrefs();
+
+      request->send(200, "application/json", "{\"status\":\"station added\"}");
+    }
+  });
+
+  // --- REST API: Control playback ---
+  server.on("/control", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
+  [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+    static String body;
+    if(index == 0) body = "";
+    body += String((char*)data).substring(0, len);
+
+    if(index + len == total){
+      DynamicJsonDocument doc(512);
+      DeserializationError error = deserializeJson(doc, body);
+      if(error){
+        request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        return;
+      }
+
+      String action = doc["action"] | "";
+      int station = doc["station"] | -1;
+      float volume = doc["volume"] | -1.0;
+
+      if(action == "play" && station >= 0 && station < numStations){
+        requestedStationIndex = station;
+        request->send(200, "application/json", "{\"status\":\"playing\"}");
+      }
+      else if(action == "pause"){
+        if(mp3 && mp3->isRunning()) mp3->stop();
+        request->send(200, "application/json", "{\"status\":\"paused\"}");
+      }
+      else if(action == "next"){
+        requestedStationIndex = (currentStationIndex + 1) % numStations;
+        request->send(200, "application/json", "{\"status\":\"next\"}");
+      }
+      else if(action == "prev"){
+        requestedStationIndex = (currentStationIndex - 1 + numStations) % numStations;
+        request->send(200, "application/json", "{\"status\":\"previous\"}");
+      }
+      else if(action == "volume" && volume >= 0.0 && volume <= 1.0){
+        currentVolume = volume;
+        preferences.putFloat("volume", currentVolume);
+        if (out) out->SetGain(currentVolume);
+        request->send(200, "application/json", "{\"status\":\"volume set\"}");
+      }
+      else{
+        request->send(400, "application/json", "{\"error\":\"Invalid action or parameters\"}");
+      }
+    }
   });
 
   server.begin();
@@ -496,7 +617,7 @@ void displayTask(void *param) {
 }
 
 void saveStationsToPrefs() {
-  StaticJsonDocument<2048> doc;
+  DynamicJsonDocument doc(2048);
   JsonArray arr = doc.to<JsonArray>();
   for (int i = 0; i < numStations; i++) {
     JsonObject obj = arr.createNestedObject();
@@ -513,8 +634,9 @@ void saveStationsToPrefs() {
 void loadStationsFromPrefs() {
   String json = preferences.getString("stations", "");
   if (json.length() > 0) {
-    StaticJsonDocument<2048> doc;
-    if (!deserializeJson(doc, json)) {
+    DynamicJsonDocument doc(2048);
+    DeserializationError err = deserializeJson(doc, json);
+    if (!err) {
       JsonArray arr = doc.as<JsonArray>();
       numStations = 0;
       for (JsonObject obj : arr) {
@@ -524,8 +646,7 @@ void loadStationsFromPrefs() {
         strncpy(stations[numStations].url, obj["url"] | "", MAX_URL_LEN);
         stations[numStations].url[MAX_URL_LEN - 1] = 0;
         numStations++;
-      
       }
-  }
+    }
   }
 }
