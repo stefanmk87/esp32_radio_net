@@ -535,46 +535,6 @@ void setup() {
   request->send(200, "application/json", json);
 });
 
-// Play station by index (you have this)
-server.on("/play", HTTP_GET, [](AsyncWebServerRequest *request) {
-  if (request->hasParam("index")) {
-    int idx = request->getParam("index")->value().toInt();
-    playStation(idx); // your function to play station
-    request->send(200, "text/plain", "Playing station " + String(idx));
-  } else {
-    request->send(400, "text/plain", "Missing index");
-  }
-});
-
-// Delete station
-server.on("/delete", HTTP_GET, [](AsyncWebServerRequest *request) {
-  if (request->hasParam("index")) {
-    int idx = request->getParam("index")->value().toInt();
-    deleteStation(idx); // implement deleting from your stations array
-    request->send(200, "text/plain", "Deleted station " + String(idx));
-  } else {
-    request->send(400, "text/plain", "Missing index");
-  }
-});
-
-// Edit station
-server.on("/edit", HTTP_POST, [](AsyncWebServerRequest *request){
-  if (request->contentType() == "application/json") {
-    DynamicJsonDocument doc(512);
-    auto error = deserializeJson(doc, request->getParam("plain")->value());
-    if (error) {
-      request->send(400, "text/plain", "Invalid JSON");
-      return;
-    }
-    int idx = doc["index"];
-    const char* name = doc["name"];
-    const char* url = doc["url"];
-    editStation(idx, String(name), String(url)); // implement updating your stations array
-    request->send(200, "text/plain", "Edited station " + String(idx));
-  } else {
-    request->send(400, "text/plain", "Expected JSON");
-  }
-});
 
 
   server.begin();
