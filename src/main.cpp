@@ -711,7 +711,6 @@ void printTaskStats() {
     }
 }
 
-
 void loadStationsFromPrefs() {
   String json = preferences.getString("stations", "");
   if (json.length() > 0) {
