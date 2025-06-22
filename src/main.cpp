@@ -689,6 +689,29 @@ void saveStationsToPrefs() {
   preferences.putFloat("volume", currentVolume);
 }
 
+void printTaskStats() {
+    const int maxTasks = 10; // adjust as needed
+    TaskStatus_t taskStatusArray[maxTasks];
+    UBaseType_t taskCount;
+    uint32_t totalRunTime;
+
+    // Get number of tasks and their info
+    taskCount = uxTaskGetSystemState(taskStatusArray, maxTasks, &totalRunTime);
+
+    Serial.printf("Task\t\tRuntime\t\tCPU%%\n");
+    for (int i = 0; i < taskCount; i++) {
+        float cpuPercent = 0;
+        if (totalRunTime > 0) {
+            cpuPercent = (taskStatusArray[i].ulRunTimeCounter * 100.0f) / totalRunTime;
+        }
+        Serial.printf("%-16s %10lu %6.2f%%\n",
+            taskStatusArray[i].pcTaskName,
+            taskStatusArray[i].ulRunTimeCounter,
+            cpuPercent);
+    }
+}
+
+
 void loadStationsFromPrefs() {
   String json = preferences.getString("stations", "");
   if (json.length() > 0) {
