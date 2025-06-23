@@ -346,6 +346,158 @@ void setup() {
     request->send(200, "text/html", html);
   });
 
+  // --- PLAY STATION ---
+// Web: GET /play?index=0
+server.on("/play", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("index")) {
+        int idx = request->getParam("index")->value().toInt();
+        if (idx >= 0 && idx < numStations) requestedStationIndex = idx;
+    }
+    request->redirect("/");
+});
+// Android: POST /play { "index": 0 }
+server.on("/play", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
+[](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+    static String body;
+    if(index == 0) body = "";
+    body += String((char*)data).substring(0, len);
+    if(index + len == total){
+        DynamicJsonDocument doc(256);
+        DeserializationError error = deserializeJson(doc, body);
+        if(error){
+            request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+            return;
+        }
+        int idx = doc["index"] | -1;
+        if(idx >= 0 && idx < numStations){
+            requestedStationIndex = idx;
+            request->send(200, "application/json", "{\"status\":\"playing\"}");
+        } else {
+            request->send(400, "application/json", "{\"error\":\"Invalid index\"}");
+        }
+    }
+});
+
+// --- ADD STATION ---
+// Web: POST /add (form)
+server.on("/add", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (numStations < MAX_STATIONS && request->hasParam("name", true) && request->hasParam("url", true)) {
+        String name = request->getParam("name", true)->value();
+        String url = request->getParam("url", true)->value();
+        strncpy(stations[numStations].name, name.c_str(), MAX_NAME_LEN);
+        stations[numStations].name[MAX_NAME_LEN - 1] = 0;
+        strncpy(stations[numStations].url, url.c_str(), MAX_URL_LEN);
+        stations[numStations].url[MAX_URL_LEN - 1] = 0;
+        numStations++;
+        saveStationsToPrefs();
+    }
+    request->redirect("/");
+});
+// Android: POST /stations { "name": "...", "url": "..." }
+server.on("/stations", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
+[](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+    static String body;
+    if(index == 0) body = "";
+    body += String((char*)data).substring(0, len);
+    if(index + len == total){
+        DynamicJsonDocument doc(256);
+        DeserializationError error = deserializeJson(doc, body);
+        if(error){
+            request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+            return;
+        }
+        String name = doc["name"] | "";
+        String urlStr = doc["url"] | "";
+        if(numStations < MAX_STATIONS && !name.isEmpty() && !urlStr.isEmpty()){
+            strncpy(stations[numStations].name, name.c_str(), MAX_NAME_LEN);
+            stations[numStations].name[MAX_NAME_LEN - 1] = 0;
+            strncpy(stations[numStations].url, urlStr.c_str(), MAX_URL_LEN);
+            stations[numStations].url[MAX_URL_LEN - 1] = 0;
+            numStations++;
+            saveStationsToPrefs();
+            request->send(200, "application/json", "{\"status\":\"added\"}");
+        } else {
+            request->send(400, "application/json", "{\"error\":\"Invalid data or full\"}");
+        }
+    }
+});
+
+// --- UPDATE STATION ---
+// Web: POST /update (form)
+server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("index", true) && request->hasParam("name", true) && request->hasParam("url", true)) {
+        int idx = request->getParam("index", true)->value().toInt();
+        if (idx >= 0 && idx < numStations) {
+            strncpy(stations[idx].name, request->getParam("name", true)->value().c_str(), MAX_NAME_LEN);
+            stations[idx].name[MAX_NAME_LEN - 1] = 0;
+            strncpy(stations[idx].url, request->getParam("url", true)->value().c_str(), MAX_URL_LEN);
+            stations[idx].url[MAX_URL_LEN - 1] = 0;
+            saveStationsToPrefs();
+        }
+    }
+    request->redirect("/");
+});
+// Android: POST /stations/<index> { "name": "...", "url": "..." }
+server.on("^\\/stations\\/(\\d+)$", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
+[](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+    static String body;
+    if(index == 0) body = "";
+    body += String((char*)data).substring(0, len);
+    if(index + len == total){
+        String url = request->url();
+        int idx = url.substring(url.lastIndexOf('/') + 1).toInt();
+        DynamicJsonDocument doc(256);
+        DeserializationError error = deserializeJson(doc, body);
+        if(error){
+            request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+            return;
+        }
+        String name = doc["name"] | "";
+        String urlStr = doc["url"] | "";
+        if(idx >= 0 && idx < numStations && !name.isEmpty() && !urlStr.isEmpty()){
+            strncpy(stations[idx].name, name.c_str(), MAX_NAME_LEN);
+            stations[idx].name[MAX_NAME_LEN - 1] = 0;
+            strncpy(stations[idx].url, urlStr.c_str(), MAX_URL_LEN);
+            stations[idx].url[MAX_URL_LEN - 1] = 0;
+            saveStationsToPrefs();
+            request->send(200, "application/json", "{\"status\":\"updated\"}");
+        } else {
+            request->send(400, "application/json", "{\"error\":\"Invalid index or data\"}");
+        }
+    }
+});
+
+// --- DELETE STATION ---
+// Web: GET /delete?index=0
+server.on("/delete", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("index")) {
+        int idx = request->getParam("index")->value().toInt();
+        if (idx >= 0 && idx < numStations) {
+            for (int i = idx; i < numStations - 1; i++) {
+                stations[i] = stations[i + 1];
+            }
+            numStations--;
+            saveStationsToPrefs();
+        }
+    }
+    request->redirect("/");
+});
+// Android: DELETE /stations/<index>
+server.on("^\\/stations\\/(\\d+)$", HTTP_DELETE, [](AsyncWebServerRequest *request){
+    String url = request->url();
+    int idx = url.substring(url.lastIndexOf('/') + 1).toInt();
+    if(idx >= 0 && idx < numStations){
+        for(int i = idx; i < numStations - 1; i++){
+            stations[i] = stations[i + 1];
+        }
+        numStations--;
+        saveStationsToPrefs();
+        request->send(200, "application/json", "{\"status\":\"deleted\"}");
+    } else {
+        request->send(400, "application/json", "{\"error\":\"Invalid index\"}");
+    }
+});
+
   // Volume control via web UI (existing)
   server.on("/volume", HTTP_POST, [](AsyncWebServerRequest *request) {
     if (request->hasParam("vol", true)) {
@@ -730,3 +882,5 @@ void loadStationsFromPrefs() {
     }
   }
 }
+
+
