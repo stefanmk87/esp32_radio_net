@@ -11,17 +11,18 @@
 #include <Preferences.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-
+// Override library buffer defaults
+#define I2S_DMA_BUF_COUNT 16      // Default: 3-4 (try 4-8)
+#define I2S_DMA_BUF_LEN 2048     // Default: 512 (try 512-2048)
 // ===== WiFi credentials =====
 const char* ssid = "MIMA";
 const char* password = "nikola18092015";
 
 // ===== OLED setup =====
 #define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 32
+#define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
 // ===== I2S pins for PCM5102A =====
 #define I2S_BCK 27
 #define I2S_LRC 26
@@ -39,6 +40,10 @@ Preferences preferences;
 #define MAX_STATIONS 20
 #define MAX_NAME_LEN 32
 #define MAX_URL_LEN 128
+
+#define VOL_ENCODER_CLK 35
+#define VOL_ENCODER_DT  36
+#define VOL_ENCODER_SW  39
 
 struct RadioStation {
   char name[MAX_NAME_LEN];
@@ -63,17 +68,46 @@ const unsigned long reconnectDelay = 5000;
 SemaphoreHandle_t titleMutex = NULL;
 volatile int requestedStationIndex = -1;
 
+// Encoder pins and variables
+#define ENCODER_CLK 32
+#define ENCODER_DT  33
+#define ENCODER_SW  34
+
+volatile int encoderPos = 0;
+volatile bool encoderMoved = false;
+volatile bool encoderButtonPressed = false;
+int lastReportedPos = 0;
+
+volatile unsigned long lastEncoderInterrupt = 0;
+volatile unsigned long lastButtonInterrupt = 0;
+const unsigned long debounceDelay = 3;   // 3 ms for encoder
+const unsigned long buttonDebounceDelay = 50; // 50 ms for button
+
+
+volatile int volEncoderPos = 0;
+volatile bool volEncoderMoved = false;
+volatile bool volEncoderButtonPressed = false;
+int lastVolReportedPos = 0;
+
+volatile unsigned long lastVolEncoderInterrupt = 0;
+volatile unsigned long lastVolButtonInterrupt = 0;
+const unsigned long volDebounceDelay = 3;   // 3 ms for encoder
+const unsigned long volButtonDebounceDelay = 50; // 50 ms for button
+bool isMuted = false;
+float lastVolumeBeforeMute = 0.5f;
+
 // Forward declarations
 void connectWiFi();
 void startStream(int stationIndex);
 void showDisplay(const String &line1, const String &line2, const String &line3);
 void MDCallback(void *cbData, const char *type, bool isUnicode, const char *str);
 void drawWiFiSignal(int x, int y);
-void drawAudioBars(int x, int y);
+//void drawAudioBars(int x, int y);
 void audioTask(void *param);
 void displayTask(void *param);
 void loadStationsFromPrefs();
 void saveStationsToPrefs();
+int findFirstSupportedStation(); // <-- Add this line
 
 
 // --- Convert stations array to JSON string for API ---
@@ -91,6 +125,51 @@ String stationsToJson() {  // *** API added ***
   serializeJson(doc, output);
   return output;
 }
+void IRAM_ATTR handleEncoder() {
+  unsigned long now = millis();
+  if (now - lastEncoderInterrupt > debounceDelay) {
+    static uint8_t lastState = 0;
+    uint8_t state = (digitalRead(ENCODER_CLK) << 1) | digitalRead(ENCODER_DT);
+    if (state == 0b10 && lastState == 0b00) encoderPos++;
+    if (state == 0b01 && lastState == 0b00) encoderPos--;
+    lastState = state;
+    encoderMoved = true;
+    lastEncoderInterrupt = now;
+  }
+}
+
+void IRAM_ATTR handleEncoderButton() {
+  unsigned long now = millis();
+  if (now - lastButtonInterrupt > buttonDebounceDelay) {
+    if (digitalRead(ENCODER_SW) == LOW) {
+      encoderButtonPressed = true;
+    }
+    lastButtonInterrupt = now;
+  }
+}
+
+void IRAM_ATTR handleVolEncoder() {
+  unsigned long now = millis();
+  if (now - lastVolEncoderInterrupt > volDebounceDelay) {
+    static uint8_t lastState = 0;
+    uint8_t state = (digitalRead(VOL_ENCODER_CLK) << 1) | digitalRead(VOL_ENCODER_DT);
+    if (state == 0b10 && lastState == 0b00) volEncoderPos++;
+    if (state == 0b01 && lastState == 0b00) volEncoderPos--;
+    lastState = state;
+    volEncoderMoved = true;
+    lastVolEncoderInterrupt = now;
+  }
+}
+
+void IRAM_ATTR handleVolEncoderButton() {
+  unsigned long now = millis();
+  if (now - lastVolButtonInterrupt > volButtonDebounceDelay) {
+    if (digitalRead(VOL_ENCODER_SW) == LOW) {
+      volEncoderButtonPressed = true;
+    }
+    lastVolButtonInterrupt = now;
+  }
+}
 
 
 void setup() {
@@ -105,7 +184,22 @@ void setup() {
     // OLED init failed, hang
     while (true) delay(1000);
   }
+  pinMode(ENCODER_CLK, INPUT_PULLUP);
+  pinMode(ENCODER_DT, INPUT_PULLUP);
+  pinMode(ENCODER_SW, INPUT_PULLUP);
 
+  attachInterrupt(digitalPinToInterrupt(ENCODER_CLK), handleEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_DT), handleEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_SW), handleEncoderButton, FALLING);
+
+    pinMode(VOL_ENCODER_CLK, INPUT_PULLUP);
+  pinMode(VOL_ENCODER_DT, INPUT_PULLUP);
+  pinMode(VOL_ENCODER_SW, INPUT_PULLUP);
+
+  attachInterrupt(digitalPinToInterrupt(VOL_ENCODER_CLK), handleVolEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(VOL_ENCODER_DT), handleVolEncoder, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(VOL_ENCODER_SW), handleVolEncoderButton, FALLING);
+  
   titleMutex = xSemaphoreCreateMutex();
   showDisplay("Booting...", "", "");
 
@@ -126,9 +220,23 @@ void setup() {
     numStations = 2;
   }
 
-  requestedStationIndex = currentStationIndex = preferences.getInt("currentIndex", 0);
+  int savedIndex = preferences.getInt("currentIndex", 0);
+  if (savedIndex < 0 || savedIndex >= numStations) savedIndex = 0;
 
-  xTaskCreatePinnedToCore(audioTask, "AudioTask", 8192, NULL, 1, NULL, 0);
+  // If saved station is unsupported, auto-select first supported
+  if (String(stations[savedIndex].url).startsWith("https://")) {
+    int supported = findFirstSupportedStation();
+    if (supported >= 0) {
+      requestedStationIndex = currentStationIndex = supported;
+    } else {
+      requestedStationIndex = currentStationIndex = 0;
+      showDisplay("No supported", "stations found!", "");
+    }
+  } else {
+    requestedStationIndex = currentStationIndex = savedIndex;
+  }
+
+  xTaskCreatePinnedToCore(audioTask, "AudioTask", 8192, NULL, 3, NULL, 0);
   xTaskCreatePinnedToCore(displayTask, "DisplayTask", 4096, NULL, 1, NULL, 1);
 
   // Serve the web interface (existing HTML + JS)
@@ -303,8 +411,8 @@ void setup() {
     html += "<td id='url" + String(i) + "'>" + stations[i].url + "</td>";
     html += "<td>";
     html += "<a href='/play?index=" + String(i) + "'><button>Play</button></a>";
-    html += "<a href='/delete?index=" + String(i) + "'><button>Delete</button></a>";
     html += "<button onclick='editStation(" + String(i) + ")'>Edit</button>";
+    html += "<a href='/delete?index=" + String(i) + "'><button>Delete</button></a>";
     html += "</td></tr>";
   }
 
@@ -345,158 +453,6 @@ void setup() {
     xSemaphoreGive(titleMutex);
     request->send(200, "text/html", html);
   });
-
-  // --- PLAY STATION ---
-// Web: GET /play?index=0
-server.on("/play", HTTP_GET, [](AsyncWebServerRequest *request) {
-    if (request->hasParam("index")) {
-        int idx = request->getParam("index")->value().toInt();
-        if (idx >= 0 && idx < numStations) requestedStationIndex = idx;
-    }
-    request->redirect("/");
-});
-// Android: POST /play { "index": 0 }
-server.on("/play", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
-[](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-    static String body;
-    if(index == 0) body = "";
-    body += String((char*)data).substring(0, len);
-    if(index + len == total){
-        DynamicJsonDocument doc(256);
-        DeserializationError error = deserializeJson(doc, body);
-        if(error){
-            request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-            return;
-        }
-        int idx = doc["index"] | -1;
-        if(idx >= 0 && idx < numStations){
-            requestedStationIndex = idx;
-            request->send(200, "application/json", "{\"status\":\"playing\"}");
-        } else {
-            request->send(400, "application/json", "{\"error\":\"Invalid index\"}");
-        }
-    }
-});
-
-// --- ADD STATION ---
-// Web: POST /add (form)
-server.on("/add", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if (numStations < MAX_STATIONS && request->hasParam("name", true) && request->hasParam("url", true)) {
-        String name = request->getParam("name", true)->value();
-        String url = request->getParam("url", true)->value();
-        strncpy(stations[numStations].name, name.c_str(), MAX_NAME_LEN);
-        stations[numStations].name[MAX_NAME_LEN - 1] = 0;
-        strncpy(stations[numStations].url, url.c_str(), MAX_URL_LEN);
-        stations[numStations].url[MAX_URL_LEN - 1] = 0;
-        numStations++;
-        saveStationsToPrefs();
-    }
-    request->redirect("/");
-});
-// Android: POST /stations { "name": "...", "url": "..." }
-server.on("/stations", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
-[](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-    static String body;
-    if(index == 0) body = "";
-    body += String((char*)data).substring(0, len);
-    if(index + len == total){
-        DynamicJsonDocument doc(256);
-        DeserializationError error = deserializeJson(doc, body);
-        if(error){
-            request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-            return;
-        }
-        String name = doc["name"] | "";
-        String urlStr = doc["url"] | "";
-        if(numStations < MAX_STATIONS && !name.isEmpty() && !urlStr.isEmpty()){
-            strncpy(stations[numStations].name, name.c_str(), MAX_NAME_LEN);
-            stations[numStations].name[MAX_NAME_LEN - 1] = 0;
-            strncpy(stations[numStations].url, urlStr.c_str(), MAX_URL_LEN);
-            stations[numStations].url[MAX_URL_LEN - 1] = 0;
-            numStations++;
-            saveStationsToPrefs();
-            request->send(200, "application/json", "{\"status\":\"added\"}");
-        } else {
-            request->send(400, "application/json", "{\"error\":\"Invalid data or full\"}");
-        }
-    }
-});
-
-// --- UPDATE STATION ---
-// Web: POST /update (form)
-server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if (request->hasParam("index", true) && request->hasParam("name", true) && request->hasParam("url", true)) {
-        int idx = request->getParam("index", true)->value().toInt();
-        if (idx >= 0 && idx < numStations) {
-            strncpy(stations[idx].name, request->getParam("name", true)->value().c_str(), MAX_NAME_LEN);
-            stations[idx].name[MAX_NAME_LEN - 1] = 0;
-            strncpy(stations[idx].url, request->getParam("url", true)->value().c_str(), MAX_URL_LEN);
-            stations[idx].url[MAX_URL_LEN - 1] = 0;
-            saveStationsToPrefs();
-        }
-    }
-    request->redirect("/");
-});
-// Android: POST /stations/<index> { "name": "...", "url": "..." }
-server.on("^\\/stations\\/(\\d+)$", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL,
-[](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-    static String body;
-    if(index == 0) body = "";
-    body += String((char*)data).substring(0, len);
-    if(index + len == total){
-        String url = request->url();
-        int idx = url.substring(url.lastIndexOf('/') + 1).toInt();
-        DynamicJsonDocument doc(256);
-        DeserializationError error = deserializeJson(doc, body);
-        if(error){
-            request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-            return;
-        }
-        String name = doc["name"] | "";
-        String urlStr = doc["url"] | "";
-        if(idx >= 0 && idx < numStations && !name.isEmpty() && !urlStr.isEmpty()){
-            strncpy(stations[idx].name, name.c_str(), MAX_NAME_LEN);
-            stations[idx].name[MAX_NAME_LEN - 1] = 0;
-            strncpy(stations[idx].url, urlStr.c_str(), MAX_URL_LEN);
-            stations[idx].url[MAX_URL_LEN - 1] = 0;
-            saveStationsToPrefs();
-            request->send(200, "application/json", "{\"status\":\"updated\"}");
-        } else {
-            request->send(400, "application/json", "{\"error\":\"Invalid index or data\"}");
-        }
-    }
-});
-
-// --- DELETE STATION ---
-// Web: GET /delete?index=0
-server.on("/delete", HTTP_GET, [](AsyncWebServerRequest *request) {
-    if (request->hasParam("index")) {
-        int idx = request->getParam("index")->value().toInt();
-        if (idx >= 0 && idx < numStations) {
-            for (int i = idx; i < numStations - 1; i++) {
-                stations[i] = stations[i + 1];
-            }
-            numStations--;
-            saveStationsToPrefs();
-        }
-    }
-    request->redirect("/");
-});
-// Android: DELETE /stations/<index>
-server.on("^\\/stations\\/(\\d+)$", HTTP_DELETE, [](AsyncWebServerRequest *request){
-    String url = request->url();
-    int idx = url.substring(url.lastIndexOf('/') + 1).toInt();
-    if(idx >= 0 && idx < numStations){
-        for(int i = idx; i < numStations - 1; i++){
-            stations[i] = stations[i + 1];
-        }
-        numStations--;
-        saveStationsToPrefs();
-        request->send(200, "application/json", "{\"status\":\"deleted\"}");
-    } else {
-        request->send(400, "application/json", "{\"error\":\"Invalid index\"}");
-    }
-});
 
   // Volume control via web UI (existing)
   server.on("/volume", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -694,7 +650,81 @@ server.on("^\\/stations\\/(\\d+)$", HTTP_DELETE, [](AsyncWebServerRequest *reque
 
 void loop() {
   // All work is done in tasks
+
+  // Rotary encoder station change
+  if (encoderMoved) {
+    encoderMoved = false;
+    if (encoderPos > lastReportedPos) {
+      // Next station
+      requestedStationIndex = (currentStationIndex + 1) % numStations;
+      lastReportedPos = encoderPos;
+    } else if (encoderPos < lastReportedPos) {
+      // Previous station
+      requestedStationIndex = (currentStationIndex - 1 + numStations) % numStations;
+      lastReportedPos = encoderPos;
+    }
+  }
+  // --- Volume encoder: increase/decrease volume ---
+  const float VOLUME_STEP = 0.05f; // 5% per detent
+
+if (volEncoderMoved) {
+  volEncoderMoved = false;
+  bool updated = false;
+  if (volEncoderPos > lastVolReportedPos) {
+    // Increase volume
+    if (!isMuted && currentVolume < 1.0f) {
+      currentVolume += VOLUME_STEP;
+      if (currentVolume > 1.0f) currentVolume = 1.0f;
+      preferences.putFloat("volume", currentVolume);
+      if (out) out->SetGain(currentVolume);
+      lastVolReportedPos = volEncoderPos;
+      updated = true;
+    }
+  } else if (volEncoderPos < lastVolReportedPos) {
+    // Decrease volume
+    if (!isMuted && currentVolume > 0.0f) {
+      currentVolume -= VOLUME_STEP;
+      if (currentVolume < 0.0f) currentVolume = 0.0f;
+      preferences.putFloat("volume", currentVolume);
+      if (out) out->SetGain(currentVolume);
+      lastVolReportedPos = volEncoderPos;
+      updated = true;
+    }
+  }
+  if (updated) showDisplay(currentTitle, stationName, localIPStr);
 }
+
+// --- Volume encoder button: mute/unmute ---
+if (volEncoderButtonPressed) {
+  volEncoderButtonPressed = false;
+  if (!isMuted) {
+    lastVolumeBeforeMute = currentVolume;
+    currentVolume = 0.0f;
+    isMuted = true;
+    if (mp3 && mp3->isRunning()) mp3->stop(); // Stop audio
+  } else {
+    currentVolume = lastVolumeBeforeMute;
+    isMuted = false;
+    requestedStationIndex = currentStationIndex; // Restart audio
+  }
+  preferences.putFloat("volume", currentVolume);
+  if (out) out->SetGain(currentVolume);
+  showDisplay(currentTitle, stationName, localIPStr);
+}
+
+  // --- Handle requested station change ---
+  // Encoder button: pause/play
+  if (encoderButtonPressed) {
+    encoderButtonPressed = false;
+    if (mp3 && mp3->isRunning()) {
+      mp3->stop();
+    } else {
+      requestedStationIndex = currentStationIndex;
+    }
+  }
+}
+
+
 
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
@@ -711,6 +741,17 @@ void connectWiFi() {
 void startStream(int stationIndex) {
   out->SetGain(currentVolume);
 
+  String url = stations[stationIndex].url;
+  if (url.startsWith("https://")) {
+    showDisplay("HTTPS not supported", stations[stationIndex].name, "");
+    Serial.printf("[StartStream] HTTPS not supported: %s\n", url.c_str());
+    int nextIndex = findFirstSupportedStation();
+    if (nextIndex != -1 && nextIndex != stationIndex) {
+      requestedStationIndex = nextIndex;
+    }
+    return;
+  }
+
   if (mp3) {
     mp3->stop();
     delete mp3;
@@ -720,6 +761,8 @@ void startStream(int stationIndex) {
     delete file;
     file = nullptr;
   }
+  Serial.printf("[StartStream] Playing station %d: %s\n", stationIndex, stations[stationIndex].name);
+  Serial.printf("URL: %s\n", stations[stationIndex].url);
 
   currentStationIndex = stationIndex;
   stationName = stations[stationIndex].name;
@@ -741,13 +784,67 @@ void startStream(int stationIndex) {
   preferences.putInt("currentIndex", currentStationIndex);
 }
 
+
+
 void MDCallback(void *cbData, const char *type, bool isUnicode, const char *str) {
+  Serial.print("[Metadata Type] ");
+  Serial.println(type);
+
+  if (str && strlen(str) > 0) {
+    Serial.print("[Metadata] ");
+    Serial.println(str);
+  }
+
   if (strcmp(type, "StreamTitle") == 0) {
     xSemaphoreTake(titleMutex, portMAX_DELAY);
     currentTitle = String(str);
     xSemaphoreGive(titleMutex);
   }
+
+  // Additional: parse full ICY metadata string if available (type == "ICY")
+  // Some implementations send full raw ICY metadata as type "ICY"
+  if (strcmp(type, "ICY") == 0 && str && strlen(str) > 0) {
+    Serial.println("[ICY Raw Metadata]");
+    Serial.println(str);
+
+    // Parse key=value pairs separated by ';'
+    String metadataStr = String(str);
+    int start = 0;
+    while (true) {
+      int sep = metadataStr.indexOf(';', start);
+      String token = (sep == -1) ? metadataStr.substring(start) : metadataStr.substring(start, sep);
+      token.trim();
+      if (token.length() == 0) break;
+
+      int eqPos = token.indexOf('=');
+      if (eqPos > 0) {
+        String key = token.substring(0, eqPos);
+        String val = token.substring(eqPos + 1);
+
+        // Remove quotes if present
+        if (val.startsWith("'") && val.endsWith("'")) {
+          val = val.substring(1, val.length() - 1);
+        }
+
+        Serial.printf("  Key: %s, Value: %s\n", key.c_str(), val.c_str());
+
+        // You can update your variables here if you want to keep them
+        if (key == "StreamTitle") {
+          xSemaphoreTake(titleMutex, portMAX_DELAY);
+          currentTitle = val;
+          xSemaphoreGive(titleMutex);
+        }
+        else if (key == "StreamUrl") {
+          Serial.println("[ICY Logo or Stream URL detected]");
+          // You could save or fetch this URL if you want to show logo later
+        }
+      }
+      if (sep == -1) break;
+      start = sep + 1;
+    }
+  }
 }
+
 
 void showDisplay(const String &line1, const String &line2, const String &line3) {
   display.clearDisplay();
@@ -755,12 +852,24 @@ void showDisplay(const String &line1, const String &line2, const String &line3) 
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
   display.println(line1);
-  display.setCursor(0, 10);
+  display.setCursor(0, 16);
   display.println(line2);
-  display.setCursor(0, 20);
+  display.setCursor(0, 32);
   display.println(line3);
-  drawWiFiSignal(SCREEN_WIDTH - 20, 25);
-  drawAudioBars(SCREEN_WIDTH - 35, 31);
+
+  // --- Volume bar at the bottom ---
+  display.setCursor(0, 48);
+  display.print("Vol: ");
+  int barWidth = 80;
+  int filled = (int)(barWidth * currentVolume);
+  display.drawRect(36, 48, barWidth, 10, SSD1306_WHITE); // outline
+  display.fillRect(36, 48, filled, 10, SSD1306_WHITE);   // filled part
+  if (isMuted) {
+    display.setCursor(120, 48);
+    display.print("MUTE");
+  }
+
+  drawWiFiSignal(SCREEN_WIDTH - 20, 50);
   display.display();
 }
 
@@ -776,12 +885,14 @@ void drawWiFiSignal(int x, int y) {
   }
 }
 
-void drawAudioBars(int x, int y) {
+/* void drawAudioBars(int x, int y) {
   for (int i = 0; i < 4; i++) {
     int height = ((i + audioBarState) % 4 + 1) * 2;
     display.fillRect(x + i * 4, y - height, 3, height, SSD1306_WHITE);
   }
 }
+*/
+
 
 void audioTask(void *param) {
   while (true) {
@@ -800,15 +911,15 @@ void audioTask(void *param) {
     if (mp3 && mp3->isRunning()) {
       if (!mp3->loop()) {
         mp3->stop();
-        vTaskDelay(pdMS_TO_TICKS(1000));
         requestedStationIndex = currentStationIndex; // retry same station
+        vTaskDelay(pdMS_TO_TICKS(100)); // Shorter delay
       }
     } else if (millis() - lastReconnectAttempt > reconnectDelay) {
       requestedStationIndex = currentStationIndex; // reconnect
       lastReconnectAttempt = millis();
     }
 
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(2)); // Keep this as short as possible
   }
 }
 
@@ -863,6 +974,7 @@ void printTaskStats() {
     }
 }
 
+
 void loadStationsFromPrefs() {
   String json = preferences.getString("stations", "");
   if (json.length() > 0) {
@@ -883,4 +995,17 @@ void loadStationsFromPrefs() {
   }
 }
 
+void printFreeHeap() {
+  Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
+}
+
+int findFirstSupportedStation() {
+  for (int i = 0; i < numStations; i++) {
+    String url = stations[i].url;
+    if (!url.startsWith("https://")) {
+      return i;
+    }
+  }
+  return -1; // No supported station found
+}
 
