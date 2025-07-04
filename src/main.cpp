@@ -11,6 +11,8 @@
 #include <Preferences.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_spi_flash.h>
+
 // Override library buffer defaults
 #define I2S_DMA_BUF_COUNT 16      // Default: 3-4 (try 4-8)
 #define I2S_DMA_BUF_LEN 2048     // Default: 512 (try 512-2048)
@@ -110,6 +112,8 @@ void saveStationsToPrefs();
 int findFirstSupportedStation(); // <-- Add this line
 
 
+
+
 // --- Convert stations array to JSON string for API ---
 String stationsToJson() {  // *** API added ***
   DynamicJsonDocument doc(2048);
@@ -171,10 +175,62 @@ void IRAM_ATTR handleVolEncoderButton() {
   }
 }
 
+void printDebugInfo() {
+  Serial.println("\n=== ESP32 Debug Info ===");
+
+  Serial.printf("Free Heap: %d KB\n", ESP.getFreeHeap() / 1024);
+  Serial.printf("Heap Size: %d KB\n", ESP.getHeapSize() / 1024);
+  Serial.printf("CPU Frequency: %d MHz\n", ESP.getCpuFreqMHz());
+  Serial.printf("Sketch Size: %d KB\n", ESP.getSketchSize() / 1024);
+
+  uint64_t mac = ESP.getEfuseMac();
+  Serial.printf("Chip ID: %012llX\n", mac);
+
+  Serial.println("=======================");
+}
+
+void printMemoryBar(const char* label, size_t used, size_t total) {
+  const int barWidth = 10;
+  float percent = (float)used / total * 100.0f;
+  int bars = (int)(barWidth * percent / 100.0f);
+
+  Serial.printf("%-12s [", label);
+  for (int i = 0; i < bars; i++) Serial.print('=');
+  for (int i = bars; i < barWidth; i++) Serial.print(' ');
+  Serial.printf("] %5.1f%% (%u KB / %u KB)\n", percent, used / 1024, total / 1024);
+}
+
+void printFlashInfo() {
+  uint32_t flashChipSize = ESP.getFlashChipSize();
+  uint32_t sketchSize = ESP.getSketchSize();
+  uint32_t freeSketchSpace = ESP.getFreeSketchSpace();
+  uint32_t usedFlash = flashChipSize - freeSketchSpace;
+
+  printMemoryBar("Flash", usedFlash, flashChipSize);
+  printMemoryBar("Sketch", sketchSize, flashChipSize);
+}
+
+void printRamInfo() {
+  size_t heapSize = ESP.getHeapSize();
+  size_t freeHeap = ESP.getFreeHeap();
+  size_t usedHeap = heapSize - freeHeap;
+
+  printMemoryBar("RAM Heap", usedHeap, heapSize);
+  // Optionally, you can add stack and static info if available
+}
+
+
 
 void setup() {
   // Disable serial debug to save resources
-  Serial.begin(115200); // <-- disabled intentionally
+Serial.begin(115200);
+delay(1000);  // wait for Serial to be ready
+printDebugInfo();
+  // Print memory usage info
+  Serial.println("=== Memory Usage ===");
+  printFlashInfo();
+  printRamInfo();
+  Serial.println("====================");
 
   // Push CPU freq to max 240 MHz
   setCpuFrequencyMhz(240);
@@ -650,7 +706,15 @@ void setup() {
 
 void loop() {
   // All work is done in tasks
-
+ static unsigned long lastDebug = 0;
+  if (millis() - lastDebug > 5000) {
+    unsigned long uptimeSec = millis() / 1000;
+    unsigned int h = uptimeSec / 3600;
+    unsigned int m = (uptimeSec % 3600) / 60;
+    unsigned int s = uptimeSec % 60;
+    Serial.printf("Uptime: %02u:%02u:%02u\n", h, m, s);
+    lastDebug = millis();
+  }
   // Rotary encoder station change
   if (encoderMoved) {
     encoderMoved = false;
@@ -850,32 +914,46 @@ void showDisplay(const String &line1, const String &line2, const String &line3) 
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
+
+  // Line 1 (e.g. station name)
   display.setCursor(0, 0);
   display.println(line1);
+
+  // Line 2 (e.g. IP address + WiFi signal)
   display.setCursor(0, 16);
-  display.println(line2);
+  display.print(line2);
+
+  // Measure text width to position signal bars after IP
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(line2, 0, 16, &x1, &y1, &w, &h);
+
+  drawWiFiSignal(w + 4, 28); // Draw signal bars just after text, y slightly adjusted for line 2
+
+  // Line 3 (e.g. stream title)
   display.setCursor(0, 32);
   display.println(line3);
 
-  // --- Volume bar at the bottom ---
+  // Volume bar bottom line
   display.setCursor(0, 48);
   display.print("Vol: ");
   int barWidth = 80;
   int filled = (int)(barWidth * currentVolume);
-  display.drawRect(36, 48, barWidth, 10, SSD1306_WHITE); // outline
-  display.fillRect(36, 48, filled, 10, SSD1306_WHITE);   // filled part
+  display.drawRect(36, 48, barWidth, 10, SSD1306_WHITE);
+  display.fillRect(36, 48, filled, 10, SSD1306_WHITE);
   if (isMuted) {
     display.setCursor(120, 48);
     display.print("MUTE");
   }
 
-  drawWiFiSignal(SCREEN_WIDTH - 20, 50);
   display.display();
 }
+
 
 void drawWiFiSignal(int x, int y) {
   long rssi = WiFi.RSSI();
   int bars = (rssi > -60) ? 4 : (rssi > -70) ? 3 : (rssi > -80) ? 2 : (rssi > -90) ? 1 : 0;
+
   for (int i = 0; i < 4; i++) {
     int h = (i + 1) * 3;
     if (i < bars)
@@ -884,6 +962,7 @@ void drawWiFiSignal(int x, int y) {
       display.drawRect(x + i * 4, y - h, 3, h, SSD1306_WHITE);
   }
 }
+
 
 /* void drawAudioBars(int x, int y) {
   for (int i = 0; i < 4; i++) {
