@@ -45,5 +45,3 @@ This project transforms the **ESP32** into a powerful Internet Radio streaming M
 | **2×18650 Lithium Batteries**| Rechargeable battery pack powering the system|
 
 ---
-
-Feel free to ask if you want me to add usage instructions, software setup, or API docs next!
