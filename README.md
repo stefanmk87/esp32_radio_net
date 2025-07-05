@@ -1,6 +1,6 @@
-# ESP32 Radio with WebUI and Android App
+# ESP32 Web Radio with WebUI and Android App
 
-This project implements an **Internet Radio** using the ESP32 microcontroller with a modern Web User Interface and optional Android app integration.
+This project transforms the **ESP32** into a powerful **Internet Radio** with a responsive Web Interface and optional Android app control.
 
 ## 🚀 Overview
 
