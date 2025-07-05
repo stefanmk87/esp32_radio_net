@@ -29,5 +29,3 @@ Features:
 | **PCM5102A DAC**                | High-fidelity I2S audio output              |
 | **LX-2B UPS Module**            | UPS power with 2×18650 batteries in parallel|
 | **Power Source**                | 2×18650 Lithium batteries                   |
-
-Detected ESP32 info:
