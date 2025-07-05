@@ -910,37 +910,74 @@ void MDCallback(void *cbData, const char *type, bool isUnicode, const char *str)
 }
 
 
-void showDisplay(const String &line1, const String &line2, const String &line3) {
+void showDisplay(const String &station, const String &meta, const String &ip) {
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
 
-  // Line 1 (e.g. station name)
+  // Line 1: Station info
   display.setCursor(0, 0);
-  display.println(line1);
+  display.println(station);
 
-  // Line 2 (e.g. IP address + WiFi signal)
+  // Line 2: (empty space)
+
+  // Line 3: Metadata
   display.setCursor(0, 16);
-  display.print(line2);
+  display.println(meta);
 
-  // Measure text width to position signal bars after IP
+  // Line 4: (empty space)
+
+  // Line 5: IP + WiFi bars
+  String ipText = "IP: " + ip;
+  display.setCursor(0, 32);
+  display.print(ipText);
+
+  // Measure width of IP text to position WiFi bars
   int16_t x1, y1;
   uint16_t w, h;
-  display.getTextBounds(line2, 0, 16, &x1, &y1, &w, &h);
+  display.getTextBounds(ipText, 0, 32, &x1, &y1, &w, &h);
 
-  drawWiFiSignal(w + 4, 28); // Draw signal bars just after text, y slightly adjusted for line 2
+  // Draw WiFi signal bars
+  drawWiFiSignal(w + 6, 38);
 
-  // Line 3 (e.g. stream title)
-  display.setCursor(0, 32);
-  display.println(line3);
-
-  // Volume bar bottom line
+  // Line 6: Volume bar
   display.setCursor(0, 48);
   display.print("Vol: ");
   int barWidth = 80;
   int filled = (int)(barWidth * currentVolume);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
   display.drawRect(36, 48, barWidth, 10, SSD1306_WHITE);
   display.fillRect(36, 48, filled, 10, SSD1306_WHITE);
+
   if (isMuted) {
     display.setCursor(120, 48);
     display.print("MUTE");
@@ -948,6 +985,9 @@ void showDisplay(const String &line1, const String &line2, const String &line3) 
 
   display.display();
 }
+
+
+
 
 
 void drawWiFiSignal(int x, int y) {
