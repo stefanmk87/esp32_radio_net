@@ -222,57 +222,52 @@ void printRamInfo() {
 
 
 void setup() {
-  // Stage 1: Minimal init, low CPU speed for low inrush
-  setCpuFrequencyMhz(80);
-  delay(200); // Let voltages stabilize
+  // Disable serial debug to save resources
+Serial.begin(115200);
+delay(1000);  // wait for Serial to be ready
+printDebugInfo();
+  // Print memory usage info
+  Serial.println("=== Memory Usage ===");
+  printFlashInfo();
+  printRamInfo();
+  Serial.println("====================");
 
-  Serial.begin(115200);
-  delay(100); // Let Serial come up
+  // Push CPU freq to max 240 MHz
+  setCpuFrequencyMhz(240);
 
-  // Stage 2: OLED Display
+  delay(100);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    while (true) delay(1000); // OLED init failed, hang
+    // OLED init failed, hang
+    while (true) delay(1000);
   }
-  showDisplay("Booting...", "", "");
-
-  // Stage 3: Preferences and Station List
-  preferences.begin("radio", false);
-  currentVolume = preferences.getFloat("volume", 0.8f);
-  loadStationsFromPrefs();
-
-  // Stage 4: Encoder pins and interrupts
   pinMode(ENCODER_CLK, INPUT_PULLUP);
   pinMode(ENCODER_DT, INPUT_PULLUP);
   pinMode(ENCODER_SW, INPUT_PULLUP);
+
   attachInterrupt(digitalPinToInterrupt(ENCODER_CLK), handleEncoder, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENCODER_DT), handleEncoder, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENCODER_SW), handleEncoderButton, FALLING);
 
-  pinMode(VOL_ENCODER_CLK, INPUT_PULLUP);
+    pinMode(VOL_ENCODER_CLK, INPUT_PULLUP);
   pinMode(VOL_ENCODER_DT, INPUT_PULLUP);
   pinMode(VOL_ENCODER_SW, INPUT_PULLUP);
+
   attachInterrupt(digitalPinToInterrupt(VOL_ENCODER_CLK), handleVolEncoder, CHANGE);
   attachInterrupt(digitalPinToInterrupt(VOL_ENCODER_DT), handleVolEncoder, CHANGE);
   attachInterrupt(digitalPinToInterrupt(VOL_ENCODER_SW), handleVolEncoderButton, FALLING);
-
+  
   titleMutex = xSemaphoreCreateMutex();
+  showDisplay("Booting...", "", "");
 
-  // Stage 5: WiFi (still at 80 MHz)
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
-  WiFi.setTxPower(WIFI_POWER_11dBm); // Lower power for less inrush
   connectWiFi();
-  delay(200); // Let WiFi settle
-
-  // Stage 6: Full CPU speed and I2S
-  setCpuFrequencyMhz(240);
-  delay(100);
 
   out = new AudioOutputI2S();
   out->SetPinout(I2S_BCK, I2S_LRC, I2S_DIN);
+  preferences.begin("radio", false);
+  currentVolume = preferences.getFloat("volume", 0.8f);
   out->SetGain(currentVolume);
 
-  // Stage 7: Station selection logic
+  loadStationsFromPrefs();
   if (numStations == 0) {
     strncpy(stations[0].name, "Naxi Radio", MAX_NAME_LEN);
     strncpy(stations[0].url, "http://naxi128.streaming.rs:9150", MAX_URL_LEN);
@@ -297,7 +292,6 @@ void setup() {
     requestedStationIndex = currentStationIndex = savedIndex;
   }
 
-  // Stage 8: Start tasks and web server
   xTaskCreatePinnedToCore(audioTask, "AudioTask", 8192, NULL, 3, NULL, 0);
   xTaskCreatePinnedToCore(displayTask, "DisplayTask", 4096, NULL, 1, NULL, 1);
 
@@ -439,10 +433,6 @@ void setup() {
 
   // Also fetch once when page loads
   window.onload = fetchStatus;
-  document.getElementById('volumeRange').oninput = function() {
-  setVolumeDebounced(this.value);
-  document.getElementById('volLabel').innerText = this.value;
-};
 </script>
   </script>
 </head>
@@ -803,7 +793,7 @@ if (volEncoderButtonPressed) {
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  WiFi.setTxPower(WIFI_POWER_11dBm); // Use low power for all
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     vTaskDelay(pdMS_TO_TICKS(500));
