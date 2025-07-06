@@ -387,6 +387,50 @@ printDebugInfo();
     }
   </style>
   <script>
+async function exportStations() {
+  let response = await fetch('/stations');
+  if (response.ok) {
+    let data = await response.text();
+    let blob = new Blob([data], {type: "application/json"});
+    let url = URL.createObjectURL(blob);
+    let a = document.createElement('a');
+    a.href = url;
+    a.download = "stations_backup.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } else {
+    alert("Failed to export stations!");
+  }
+}
+
+function importStations(input) {
+  let file = input.files[0];
+  if (!file) return;
+  let reader = new FileReader();
+  reader.onload = async function(e) {
+    try {
+      let json = e.target.result;
+      let response = await fetch('/stations', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: json
+      });
+      if (response.ok) {
+        alert("Stations imported! Rebooting...");
+        location.reload();
+      } else {
+        alert("Import failed: " + await response.text());
+      }
+    } catch (err) {
+      alert("Import error: " + err);
+    }
+  };
+  reader.readAsText(file);
+}
+</script>
+  <script>
 
 
 
@@ -456,13 +500,14 @@ printDebugInfo();
     <h2>Stations</h2>
     <table>
       <thead>
-        <tr><th>Name</th><th>URL</th><th>Actions</th></tr>
+        <tr><th>Ch.number</th><th>Name</th><th>URL</th><th>Actions</th></tr>
       </thead>
       <tbody>
 )rawliteral";
 
   for (int i = 0; i < numStations; i++) {
     html += "<tr>";
+    html += "<td>" + String(i + 1) + "</td>"; // Ch.number (1-based)
     html += "<td id='name" + String(i) + "'>" + stations[i].name + "</td>";
     html += "<td id='url" + String(i) + "'>" + stations[i].url + "</td>";
     html += "<td>";
@@ -501,6 +546,13 @@ printDebugInfo();
       <button type="submit">Add Station</button>
     </form>
   </section>
+
+<section>
+  <h2>Backup & Restore Stations</h2>
+  <button onclick="exportStations()">Export Stations</button>
+  <input type="file" id="importFile" style="display:none" accept=".json" onchange="importStations(this)">
+  <button onclick="document.getElementById('importFile').click()">Import Stations</button>
+</section>
 
 </body>
 </html>
@@ -590,35 +642,50 @@ printDebugInfo();
     body += String((char*)data).substring(0, len);
 
     if(index + len == total){
-      DynamicJsonDocument doc(512);
+      DynamicJsonDocument doc(4096);
       DeserializationError error = deserializeJson(doc, body);
       if(error){
         request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
         return;
       }
 
+      // If it's an array, import all stations
+      if (doc.is<JsonArray>()) {
+        JsonArray arr = doc.as<JsonArray>();
+        int count = 0;
+        for (JsonObject obj : arr) {
+          if (!obj.containsKey("name") || !obj.containsKey("url")) continue;
+          if (count >= MAX_STATIONS) break;
+          strncpy(stations[count].name, obj["name"] | "", MAX_NAME_LEN);
+          stations[count].name[MAX_NAME_LEN - 1] = 0;
+          strncpy(stations[count].url, obj["url"] | "", MAX_URL_LEN);
+          stations[count].url[MAX_URL_LEN - 1] = 0;
+          count++;
+        }
+        numStations = count;
+        saveStationsToPrefs();
+        request->send(200, "application/json", "{\"status\":\"imported\"}");
+        return;
+      }
+
+      // Fallback: single station object (legacy)
       String name = doc["name"] | "";
       String url = doc["url"] | "";
-
       if(name.isEmpty() || url.isEmpty()){
         request->send(400, "application/json", "{\"error\":\"Missing name or url\"}");
         return;
       }
-
       if(numStations >= MAX_STATIONS){
         request->send(400, "application/json", "{\"error\":\"Station list full\"}");
         return;
       }
-
       RadioStation newStation;
       strncpy(newStation.name, name.c_str(), MAX_NAME_LEN);
       newStation.name[MAX_NAME_LEN-1] = 0;
       strncpy(newStation.url, url.c_str(), MAX_URL_LEN);
       newStation.url[MAX_URL_LEN-1] = 0;
       stations[numStations++] = newStation;
-
       saveStationsToPrefs();
-
       request->send(200, "application/json", "{\"status\":\"station added\"}");
     }
   });
@@ -1127,4 +1194,6 @@ int findFirstSupportedStation() {
   }
   return -1; // No supported station found
 }
+
+
 
