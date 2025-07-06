@@ -111,7 +111,10 @@ void loadStationsFromPrefs();
 void saveStationsToPrefs();
 int findFirstSupportedStation(); // <-- Add this line
 
-
+void moveStationUp(int idx);
+void moveStationDown(int idx);
+void moveStationFirst(int idx);
+void moveStationLast(int idx);
 
 
 // --- Convert stations array to JSON string for API ---
@@ -507,13 +510,17 @@ function importStations(input) {
 
   for (int i = 0; i < numStations; i++) {
     html += "<tr>";
-    html += "<td>" + String(i + 1) + "</td>"; // Ch.number (1-based)
+    html += "<td>" + String(i + 1) + "</td>";
     html += "<td id='name" + String(i) + "'>" + stations[i].name + "</td>";
     html += "<td id='url" + String(i) + "'>" + stations[i].url + "</td>";
     html += "<td>";
     html += "<a href='/play?index=" + String(i) + "'><button>Play</button></a>";
     html += "<button onclick='editStation(" + String(i) + ")'>Edit</button>";
     html += "<a href='/delete?index=" + String(i) + "'><button>Delete</button></a>";
+    html += "<a href='/moveup?index=" + String(i) + "'><button>&uarr;</button></a>";
+    html += "<a href='/movedown?index=" + String(i) + "'><button>&darr;</button></a>";
+    html += "<a href='/movefirst?index=" + String(i) + "'><button>&#8676;</button></a>";
+    html += "<a href='/movelast?index=" + String(i) + "'><button>&#8677;</button></a>";
     html += "</td></tr>";
   }
 
@@ -766,6 +773,39 @@ function importStations(input) {
   request->send(200, "application/json", json);
 });
 
+
+
+  server.on("/moveup", HTTP_GET, [](AsyncWebServerRequest *request) {
+  if (request->hasParam("index")) {
+    int idx = request->getParam("index")->value().toInt();
+    moveStationUp(idx);
+  }
+  request->redirect("/");
+});
+
+server.on("/movedown", HTTP_GET, [](AsyncWebServerRequest *request) {
+  if (request->hasParam("index")) {
+    int idx = request->getParam("index")->value().toInt();
+    moveStationDown(idx);
+  }
+  request->redirect("/");
+});
+
+server.on("/movefirst", HTTP_GET, [](AsyncWebServerRequest *request) {
+  if (request->hasParam("index")) {
+    int idx = request->getParam("index")->value().toInt();
+    moveStationFirst(idx);
+  }
+  request->redirect("/");
+});
+
+server.on("/movelast", HTTP_GET, [](AsyncWebServerRequest *request) {
+  if (request->hasParam("index")) {
+    int idx = request->getParam("index")->value().toInt();
+    moveStationLast(idx);
+  }
+  request->redirect("/");
+});
 
 
   server.begin();
@@ -1193,6 +1233,46 @@ int findFirstSupportedStation() {
     }
   }
   return -1; // No supported station found
+}
+
+void moveStationUp(int idx) {
+  if (idx > 0 && idx < numStations) {
+    RadioStation tmp = stations[idx];
+    stations[idx] = stations[idx - 1];
+    stations[idx - 1] = tmp;
+    saveStationsToPrefs();
+  }
+}
+
+void moveStationDown(int idx) {
+  if (idx >= 0 && idx < numStations - 1) {
+    RadioStation tmp = stations[idx];
+    stations[idx] = stations[idx + 1];
+    stations[idx + 1] = tmp;
+    saveStationsToPrefs();
+  }
+}
+
+void moveStationFirst(int idx) {
+  if (idx > 0 && idx < numStations) {
+    RadioStation tmp = stations[idx];
+    for (int i = idx; i > 0; i--) {
+      stations[i] = stations[i - 1];
+    }
+    stations[0] = tmp;
+    saveStationsToPrefs();
+  }
+}
+
+void moveStationLast(int idx) {
+  if (idx >= 0 && idx < numStations - 1) {
+    RadioStation tmp = stations[idx];
+    for (int i = idx; i < numStations - 1; i++) {
+      stations[i] = stations[i + 1];
+    }
+    stations[numStations - 1] = tmp;
+    saveStationsToPrefs();
+  }
 }
 
 
