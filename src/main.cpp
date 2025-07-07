@@ -433,6 +433,27 @@ function importStations(input) {
   reader.readAsText(file);
 }
 </script>
+<script>
+function submitEditForm(event) {
+  event.preventDefault();
+  const form = document.getElementById('editStationForm');
+  const formData = new FormData(form);
+  fetch('/update', {
+    method: 'POST',
+    body: new URLSearchParams(formData)
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.status === "updated") {
+      location.reload();
+    } else {
+      alert("Update failed: " + (data.error || "Unknown error"));
+    }
+  })
+  .catch(err => alert("Update error: " + err));
+  return false;
+}
+</script>
   <script>
 
 
@@ -531,15 +552,15 @@ function importStations(input) {
 
 <section id="editForm">
   <h2>Edit Station</h2>
-  <form action="/update" method="POST">
-    <input type="hidden" id="editIndex" name="index" />
-    <label for="editName">Name</label>
-    <input type="text" id="editName" name="name" required />
-    <label for="editUrl">URL</label>
-    <input type="url" id="editUrl" name="url" required />
-    <button type="submit">Update Station</button>
-    <button type="button" onclick="cancelEdit()">Cancel</button>
-  </form>
+  <form id="editStationForm" action="/update" method="POST" onsubmit="return submitEditForm(event)">
+  <input type="hidden" id="editIndex" name="index" />
+  <label for="editName">Name</label>
+  <input type="text" id="editName" name="name" required />
+  <label for="editUrl">URL</label>
+  <input type="url" id="editUrl" name="url" required />
+  <button type="submit">Update Station</button>
+  <button type="button" onclick="cancelEdit()">Cancel</button>
+</form>
 </section>
 
 
@@ -615,9 +636,11 @@ function importStations(input) {
         strncpy(stations[idx].url, request->getParam("url", true)->value().c_str(), MAX_URL_LEN);
         stations[idx].url[MAX_URL_LEN - 1] = 0;
         saveStationsToPrefs();
+        request->send(200, "application/json", "{\"status\":\"updated\"}");
+        return;
       }
     }
-    request->redirect("/");
+    request->send(400, "application/json", "{\"error\":\"Invalid parameters\"}");
   });
 
   // Delete station (existing)
@@ -1116,8 +1139,7 @@ void drawWiFiSignal(int x, int y) {
     int height = ((i + audioBarState) % 4 + 1) * 2;
     display.fillRect(x + i * 4, y - height, 3, height, SSD1306_WHITE);
   }
-}
-*/
+}*/
 
 
 void audioTask(void *param) {
