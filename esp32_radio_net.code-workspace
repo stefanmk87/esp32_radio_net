@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../Android App test/esp32_android"
+		}
+	],
+	"settings": {}
+}
